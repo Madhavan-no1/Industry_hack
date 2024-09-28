@@ -6,8 +6,10 @@ import time
 import re
 import os
 from dotenv import load_dotenv
-from PIL import Image  # Add this import
+from PIL import Image  # Import for image handling
 import io
+from docx import Document  # Import for creating Word documents
+from docx.shared import Inches
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,7 +27,6 @@ def initialize_model():
     }
     return genai.GenerativeModel("gemini-1.5-pro", generation_config=generation_config)
 
-# (rest of your code remains unchanged)
 # Function to clean the JSON response
 def clean_json_response(response_text):
     cleaned_text = re.sub(r'^json\s*```|```$', '', response_text, flags=re.IGNORECASE | re.MULTILINE)
@@ -63,8 +64,43 @@ def extract_hemodialysis_data(model, image):
     else:
         return {"success": False, "error": "No valid content generated"}, execution_time
 
+# Function to create a Word document from JSON data and image
+def create_word_document(data, image):
+    document = Document()
+    
+    # Add a title
+    document.add_heading('Hemodialysis Data Extraction', 0)
+    
+    # Add the uploaded image
+    image_bytes = io.BytesIO()
+    image.save(image_bytes, format='JPEG')
+    image_bytes.seek(0)
+    document.add_picture(image_bytes, width=Inches(6))
+    document.add_paragraph('Uploaded Image')
+    
+    # Add a table for the data
+    document.add_heading('Extracted Data', level=1)
+    table = document.add_table(rows=1, cols=2)
+    table.style = 'Light List Accent 1'
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = 'Parameter'
+    hdr_cells[1].text = 'Value'
+    
+    for key, value in data.items():
+        row_cells = table.add_row().cells
+        row_cells[0].text = str(key)
+        row_cells[1].text = str(value)
+    
+    # Save the document to a BytesIO object
+    doc_bytes = io.BytesIO()
+    document.save(doc_bytes)
+    doc_bytes.seek(0)
+    
+    return doc_bytes
+
 # Streamlit app
 def main():
+    st.set_page_config(page_title="Hemodialysis Data Extractor", layout="wide")
     st.title("Hemodialysis Data Extractor")
 
     # Initialize session state
@@ -90,12 +126,24 @@ def main():
             
             # Button to extract data
             if st.button("Extract Data"):
-                result, execution_time = extract_hemodialysis_data(st.session_state.model, image)
+                with st.spinner("Extracting data..."):
+                    result, execution_time = extract_hemodialysis_data(st.session_state.model, image)
                 
                 # Display the extracted data or error message
-                st.write("Extraction Result:")
+                st.write("### Extraction Result:")
                 if result["success"]:
                     st.json(result["data"])
+                    
+                    # Create Word document
+                    doc_bytes = create_word_document(result["data"], image)
+                    
+                    # Provide download button for the Word document
+                    st.download_button(
+                        label="Download as Word Document",
+                        data=doc_bytes,
+                        file_name="hemodialysis_data.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
                 else:
                     st.error(f"Error: {result['error']}")
                     if "raw_response" in result:
@@ -103,16 +151,17 @@ def main():
                         st.code(result["raw_response"], language="json")
                 
                 # Display execution time
-                st.write(f"Execution Time: {execution_time:.2f} seconds")
+                st.write(f"**Execution Time:** {execution_time:.2f} seconds")
 
-                # Add to history
-                st.session_state.history.append({
-                    "image": image,
-                    "result": result,
-                    "execution_time": execution_time
-                })
+                if result["success"]:
+                    # Add to history
+                    st.session_state.history.append({
+                        "image": image,
+                        "result": result,
+                        "execution_time": execution_time
+                    })
 
-                st.success("Data extracted and added to history!")
+                    st.success("Data extracted and added to history!")
 
     elif page == "History":
         st.header("Extraction History")
@@ -120,17 +169,31 @@ def main():
             st.write("No extraction history available.")
         else:
             for i, entry in enumerate(st.session_state.history):
-                st.subheader(f"Entry {i+1}")
-                st.image(entry["image"], caption=f'Image {i+1}', use_column_width=True)
-                if entry["result"]["success"]:
-                    st.json(entry["result"]["data"])
-                else:
-                    st.error(f"Error: {entry['result']['error']}")
-                    if "raw_response" in entry["result"]:
-                        st.write("Raw response from the model:")
-                        st.code(entry["result"]["raw_response"], language="json")
-                st.write(f"Execution Time: {entry['execution_time']:.2f} seconds")
-                st.markdown("---")
+                with st.expander(f"Entry {i+1}"):
+                    st.image(entry["image"], caption=f'Image {i+1}', use_column_width=True)
+                    if entry["result"]["success"]:
+                        st.json(entry["result"]["data"])
+                        
+                        # Create Word document for history entry
+                        doc_bytes = create_word_document(entry["result"]["data"], entry["image"])
+                        
+                        # Provide download button for the Word document
+                        st.download_button(
+                            label=f"Download Entry {i+1} as Word Document",
+                            data=doc_bytes,
+                            file_name=f"hemodialysis_data_entry_{i+1}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        )
+                    else:
+                        st.error(f"Error: {entry['result']['error']}")
+                        if "raw_response" in entry["result"]:
+                            st.write("Raw response from the model:")
+                            st.code(entry["result"]["raw_response"], language="json")
+                    st.write(f"**Execution Time:** {entry['execution_time']:.2f} seconds")
+    
+    # Optional: Add footer or additional information
+    st.markdown("---")
+    st.markdown("© 2024 Hemodialysis Data Extractor App")
 
 if __name__ == "__main__":
     main()
